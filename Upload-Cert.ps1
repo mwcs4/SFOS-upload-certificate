@@ -348,7 +348,7 @@ class FirewallApi {
 		}
 
 		if ($this.WAFRules.Length -eq 0) {
-			return false
+			return $false
 		}
 	
 		$Query = '<Get><FirewallRuleGroup></FirewallRuleGroup></Get>'
@@ -460,7 +460,7 @@ function LoadCertificate {
 	}
 
 	if (-not [string]::IsNullOrEmpty($CertificateFriendlyName)) {
-		Write-Verbose "Loading Certificate with FriendlyName containing`"$CertificateFriendlyName`""
+		Write-Verbose "Loading Certificate with FriendlyName containing `"$CertificateFriendlyName`""
 
 		if ($Exact) {
 			return (Get-ChildItem -Path cert:\localMachine\my| Sort-Object -Property NotAfter -Descending | Where-Object {$_.FriendlyName -eq $CertificateFriendlyName}) | Select-Object -First 1
