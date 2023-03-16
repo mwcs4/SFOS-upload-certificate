@@ -179,7 +179,7 @@ function ContainsAll([string[]] $List, [string[]]$Search) {
 	}
 
 	foreach ($Element in $Search) {
-		if (-not $List -match $Element) {
+		if ($List -notcontains $Element) {
 			return $false
 		}
 	}
