@@ -36,7 +36,7 @@ Friendly name to use when importing the cert. Will be prefixed with the current 
 If this parameter is not set, the CN of the certificate will be used.
 
 .PARAMETER Exact
-Include this switch parameter if the FriendlyName parameter is the eacte FriendlyName of the certificate
+Include this switch parameter if the FriendlyName parameter is the exact FriendlyName of the certificate
 
 .PARAMETER RulesGroup
 Name of the group to put WAF rules into.
@@ -154,7 +154,6 @@ function GeneratePassword {
     $password
 }
 
-
 function ToArray {
 	begin {
 		$output = @();
@@ -166,7 +165,6 @@ function ToArray {
 		return ,$output;
 	}
 }
-
 
 function ContainsAll([string[]] $List, [string[]]$Search) {
 
@@ -185,7 +183,6 @@ function ContainsAll([string[]] $List, [string[]]$Search) {
 	}
 	return $true
 }
-
 
 class FirewallApi {
 	[string]$Uri
@@ -445,7 +442,6 @@ class ManagedCertificate {
 	}
 }
 
-
 function LoadCertificate {
 	if (-not [string]::IsNullOrEmpty($PfxPath)) {
 		# Load Certificate from file
@@ -499,12 +495,21 @@ function Main {
 	$FirewallApi.Credential = $Credential
 	$FirewallApi.Uri = $Uri
 
-	$ManagedCertificate.ExportCertificateToTempFile()
-	$UploadResult = $FirewallApi.UploadCertificate($ManagedCertificate.FilePath, $ManagedCertificate.Password, $CertName)
-	$ManagedCertificate.DeleteLastExport()
-
-	if ($UploadResult -ne 0) {
-		return
+	if ([string]::IsNullOrEmpty($PfxPath)) {
+		# Export certificate to temporary file for upload
+		$ManagedCertificate.ExportCertificateToTempFile()
+		$UploadResult = $FirewallApi.UploadCertificate($ManagedCertificate.FilePath, $ManagedCertificate.Password, $CertName)
+		$ManagedCertificate.DeleteLastExport()
+		if ($UploadResult -ne 0) {
+			return
+		}
+	}
+	else {
+		# Use existing certificate file for upload
+		$UploadResult = $FirewallApi.UploadCertificate($PfxPath, $PfxPath, $CertName)
+		if ($UploadResult -ne 0) {
+			return
+		}
 	}
 	
 	$null = $FirewallApi.UpdateWAFRules($CertName, $DomainNames)
