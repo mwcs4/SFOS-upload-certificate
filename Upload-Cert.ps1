@@ -506,7 +506,7 @@ function Main {
 	}
 	else {
 		# Use existing certificate file for upload
-		$UploadResult = $FirewallApi.UploadCertificate($PfxPath, $PfxPath, $CertName)
+		$UploadResult = $FirewallApi.UploadCertificate($PfxPath, $PfxPassword, $CertName)
 		if ($UploadResult -ne 0) {
 			return
 		}
