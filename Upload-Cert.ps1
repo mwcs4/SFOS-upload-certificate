@@ -44,6 +44,9 @@ Name of the group to put WAF rules into.
 .PARAMETER UpdateAdminCertificate
 Include this switch parameter to update the admin and user portal cert
 
+.PARAMETER UpdateSMTPCertificate
+Include this switch parameter to update the SMTP cert
+
 .PARAMETER DeleteOldCertificates
 Include this switch parameter to delete obsolete certs that were used by updated WAF rules
 
@@ -122,6 +125,9 @@ param(
 
 	[switch]
 	$UpdateAdminCertificate,
+
+	[switch]
+	$UpdateSmtpCertificate,
 
 	[switch]
 	$DeleteOldCertificates
@@ -338,6 +344,29 @@ class FirewallApi {
 		return $Ok
 	}
 
+	[bool]UpdateSmtpCertificate([string]$Certificate) {
+		Write-Verbose "Updating Certificate of SMTP"
+		$Query = '<Get><EmailConfiguration></EmailConfiguration></Get>'
+		$Result = $this.Query($Query)
+
+		$EmailConfiguration = $Result.Response.EmailConfiguration
+
+		$EmailConfiguration.Attributes.RemoveNamedItem('transactionid') 
+		$CertNode = $EmailConfiguration.SMTPTLSConfiguration.SelectSingleNode('TLSCertificate')
+		$CertNode.InnerText = $Certificate
+		[string]$Xml = $EmailConfiguration.OuterXml
+		
+		$Query = "<Set operation=`"Update`">$Xml</Set>"
+		$Result = $this.Query($Query)
+		$StatusCode = $Result.Response.EmailConfiguration.Status
+       
+		$Ok = $StatusCode.Code -eq "200"
+		if (-not $Ok) {
+			Write-Verbose "SMTP Certificate update failed with error $($StatusCode.Code): `"$($StatusCode.InnerText)`""
+		}
+		return $Ok
+	}
+
 	[bool]MoveRulesToGroup([string]$GroupName) {
 		Write-Verbose "Moving rules to group `"$GroupName`""
 		if ([string]::IsNullOrEmpty($GroupName)) {
@@ -518,6 +547,10 @@ function Main {
 	
 	if ($UpdateAdminCertificate) {
 		$null = $FirewallApi.UpdateAdminCertificate($CertName)
+	}
+
+	if ($UpdateSmtpCertificate) {
+		$null = $FirewallApi.UpdateSmtpCertificate($CertName)
 	}
 	
 	if ($DeleteOldCertificates) {
