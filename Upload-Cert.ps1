@@ -462,24 +462,23 @@ function PrepareCertificate {
 	if (-not [string]::IsNullOrEmpty($global:InternalPfxPath)) {
 		# Load Certificate from file
 		Write-Verbose "Using existing Certificate File"
-		return
+		return $false
 	}
 
 	$global:InternalPfxPassword = (ConvertTo-SecureString -String GeneratePassword -Force -AsPlainText)
 	$global:InternalPfxPath = CreateTempPath
-	$global:DeleteTempCert = $true
 
 	if ($null -ne $global:Certificate) {
 		# Use Certificate from parameter
 		$global:Certificate | Export-PfxCertificate -FilePath $global:InternalPfxPath -Password $global:InternalPfxPassword | Out-Null
-		return
+		return $true
 	}
 	
 	# Load Certificate from storage
 	if (-not [string]::IsNullOrEmpty($CertificateThumbprint)) {
 		Write-Verbose "Loading Certificate with thumbprint `"$CertificateThumbprint`""
 		Get-ChildItem -Path cert:\localMachine\my\$CertificateThumbprint | Export-PfxCertificate -FilePath $global:InternalPfxPath -Password $global:InternalPfxPassword | Out-Null
-		return
+		return $true
 	}
 
 	if (-not [string]::IsNullOrEmpty($CertificateFriendlyName)) {
@@ -494,16 +493,21 @@ function PrepareCertificate {
 		}
 
 		$cert | Select-Object -First 1 | Export-PfxCertificate -FilePath $global:InternalPfxPath -Password $global:InternalPfxPassword | Out-Null
+		return $true
 	}
+	return $false
 }
 
 function Main {
 
+	$DeleteTempCert = $false
 	if ($null -eq $Certificate) {
-		PrepareCertificate
+		$DeleteTempCert = PrepareCertificate
 		Write-Verbose "Loading $global:InternalPfxPath"
 		$Certificate = Get-PfxCertificate -FilePath $global:InternalPfxPath -Password $global:InternalPfxPassword
 	}
+
+	Write-Verbose "Delete $DeleteTempCert"
 
 	if ($null -eq $Certificate) {
 		Write-Verbose "No Certificate found. Exiting."
@@ -529,27 +533,26 @@ function Main {
 
 	$UploadResult = $FirewallApi.UploadCertificate($global:InternalPfxPath, $global:InternalPfxPassword, $CertName)
 	
-	if ($UploadResult -ne 0) {
-		return
-	}
+	if ($UploadResult -eq 0) {
+		$null = $FirewallApi.UpdateWAFRules($CertName, $DomainNames)
 	
-	$null = $FirewallApi.UpdateWAFRules($CertName, $DomainNames)
+		$null = $FirewallApi.MoveRulesToGroup($RulesGroup)
+		
+		if ($UpdateAdminCertificate) {
+			$null = $FirewallApi.UpdateAdminCertificate($CertName)
+		}
 	
-	$null = $FirewallApi.MoveRulesToGroup($RulesGroup)
-	
-	if ($UpdateAdminCertificate) {
-		$null = $FirewallApi.UpdateAdminCertificate($CertName)
-	}
-
-	if ($UpdateSmtpCertificate) {
-		$null = $FirewallApi.UpdateSmtpCertificate($CertName)
-	}
-	
-	if ($DeleteOldCertificates) {
-		$null = $FirewallApi.DeleteCertificates()
+		if ($UpdateSmtpCertificate) {
+			$null = $FirewallApi.UpdateSmtpCertificate($CertName)
+		}
+		
+		if ($DeleteOldCertificates) {
+			$null = $FirewallApi.DeleteCertificates()
+		}
 	}
 
-	if ($global:DeleteTempCert) {
+	if ($DeleteTempCert) {
+		Write-Verbose "Deleting temporary cert file."
 		Remove-Item $global:InternalPfxPath
 	}
 }
