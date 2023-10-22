@@ -133,6 +133,10 @@ param(
 	$DeleteOldCertificates
 )
 
+$global:DeleteTempCert = $false
+$global:InternalPfxPath = $PfxPath
+$global:InternalPfxPassword = $PfxPassword
+
 if ($PSVersionTable.PSVersion.Major -lt 7)
 {
 	Write-Error "Please upgrade Powershell version. Minimum required version is v7.0"
@@ -158,6 +162,12 @@ function GeneratePassword {
     until (($hasLowerChar + $hasUpperChar + $hasDigit + $hasSymbol) -ge 3)
 
     $password
+}
+
+function CreateTempPath {
+	$TempPath = ([System.IO.Path]::GetTempFileName())
+	Remove-Item $TempPath
+	return $TempPath.Replace('.tmp', '.pfx')
 }
 
 function ToArray {
@@ -188,6 +198,20 @@ function ContainsAll([string[]] $List, [string[]]$Search) {
 		}
 	}
 	return $true
+}
+
+function GetCertificateNames($Certificate) {
+	$Subject = $Certificate.Subject.Substring(3) # Remove 'CN='
+
+	# Get Subject Alternative Names
+	$SAN = ($Certificate.Extensions | Where-Object {$_ -is [System.Security.Cryptography.X509Certificates.X509SubjectAlternativeNameExtension]}).Format(1)
+
+	$SAN = $SAN -replace "`n","" -replace "`r",""
+
+	$Names = $SAN.Split("DNS Name=",[System.StringSplitOptions]::RemoveEmptyEntries)
+	$Names += $Subject
+	
+	return $Names | Select-Object -Unique
 }
 
 class FirewallApi {
@@ -434,69 +458,51 @@ class FirewallApi {
 	}
 }
 
-class ManagedCertificate {
-	[System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate
-	[securestring]$Password
-	[string]$FilePath
-
-	ManagedCertificate([System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate) {
-		$this.Certificate = $Certificate
-	}
-
-	[void]ExportCertificateToTempFile() {
-		$this.FilePath = ([System.IO.Path]::GetTempFileName()).Replace(".tmp", ".pfx")
-		$this.Password = (ConvertTo-SecureString -String GeneratePassword -Force -AsPlainText)
-		$null = Export-PfxCertificate $this.Certificate -FilePath $this.FilePath -Password $this.Password
-	}
-
-	[void]DeleteLastExport() {
-		if (-not [string]::IsNullOrEmpty($this.FilePath)) { 
-			Remove-Item $this.FilePath
-			$this.FilePath = $null
-		}
-	}
-
-	[string[]]GetCertificateNames() {
-		$Subject = $this.Certificate.Subject.Substring(3) # Remove 'CN='
-
-		# Get Subject Alternative Names
-		$SAN = ($this.Certificate.Extensions | Where-Object {$_ -is [System.Security.Cryptography.X509Certificates.X509SubjectAlternativeNameExtension]}).Format(1)
-
-		$SAN = $SAN -replace "`n","" -replace "`r",""
-
-		$Names = $SAN.Split("DNS-Name=",[System.StringSplitOptions]::RemoveEmptyEntries)
-		$Names += $Subject
-		
-		return $Names | Select-Object -Unique
-	}
-}
-
-function LoadCertificate {
-	if (-not [string]::IsNullOrEmpty($PfxPath)) {
+function PrepareCertificate {
+	if (-not [string]::IsNullOrEmpty($global:InternalPfxPath)) {
 		# Load Certificate from file
-		Write-Verbose "Loading $PfxPath"
-		return Get-PfxCertificate -FilePath $PfxPath -Password $PfxPassword
+		Write-Verbose "Using existing Certificate File"
+		return
+	}
+
+	$global:InternalPfxPassword = (ConvertTo-SecureString -String GeneratePassword -Force -AsPlainText)
+	$global:InternalPfxPath = CreateTempPath
+	$global:DeleteTempCert = $true
+
+	if ($null -ne $global:Certificate) {
+		# Use Certificate from parameter
+		$global:Certificate | Export-PfxCertificate -FilePath $global:InternalPfxPath -Password $global:InternalPfxPassword | Out-Null
+		return
 	}
 	
 	# Load Certificate from storage
 	if (-not [string]::IsNullOrEmpty($CertificateThumbprint)) {
 		Write-Verbose "Loading Certificate with thumbprint `"$CertificateThumbprint`""
-		return Get-ChildItem -Path cert:\localMachine\my\$CertificateThumbprint
+		Get-ChildItem -Path cert:\localMachine\my\$CertificateThumbprint | Export-PfxCertificate -FilePath $global:InternalPfxPath -Password $global:InternalPfxPassword | Out-Null
+		return
 	}
 
 	if (-not [string]::IsNullOrEmpty($CertificateFriendlyName)) {
 		Write-Verbose "Loading Certificate with FriendlyName containing `"$CertificateFriendlyName`""
 
+		$cert = (Get-ChildItem -Path cert:\localMachine\my| Sort-Object -Property NotAfter -Descending)
+
 		if ($Exact) {
-			return (Get-ChildItem -Path cert:\localMachine\my| Sort-Object -Property NotAfter -Descending | Where-Object {$_.FriendlyName -eq $CertificateFriendlyName}) | Select-Object -First 1
+			$cert = ($cert | Where-Object {$_.FriendlyName -eq $CertificateFriendlyName})
+		} else {
+			$cert = ($cert | Where-Object {$_.FriendlyName.Contains($CertificateFriendlyName)})
 		}
-		return (Get-ChildItem -Path cert:\localMachine\my| Sort-Object -Property NotAfter -Descending | Where-Object {$_.FriendlyName.Contains($CertificateFriendlyName)}) | Select-Object -First 1
+
+		$cert | Select-Object -First 1 | Export-PfxCertificate -FilePath $global:InternalPfxPath -Password $global:InternalPfxPassword | Out-Null
 	}
 }
 
 function Main {
+
 	if ($null -eq $Certificate) {
-		$Certificate = LoadCertificate
+		PrepareCertificate
+		Write-Verbose "Loading $global:InternalPfxPath"
+		$Certificate = Get-PfxCertificate -FilePath $global:InternalPfxPath -Password $global:InternalPfxPassword
 	}
 
 	if ($null -eq $Certificate) {
@@ -506,10 +512,7 @@ function Main {
 
 	Write-Verbose "Certificate Thumbprint is `"$($Certificate.Thumbprint)`""
 
-	$ManagedCertificate = [ManagedCertificate]::new($Certificate)
-
-	$DomainNames =  $ManagedCertificate.GetCertificateNames()
-
+	$DomainNames =  GetCertificateNames $Certificate
 	Write-Verbose "Domain names are `"$DomainNames`""
 
 	if ([string]::IsNullOrEmpty($FriendlyName)) {
@@ -524,21 +527,10 @@ function Main {
 	$FirewallApi.Credential = $Credential
 	$FirewallApi.Uri = $Uri
 
-	if ([string]::IsNullOrEmpty($PfxPath)) {
-		# Export certificate to temporary file for upload
-		$ManagedCertificate.ExportCertificateToTempFile()
-		$UploadResult = $FirewallApi.UploadCertificate($ManagedCertificate.FilePath, $ManagedCertificate.Password, $CertName)
-		$ManagedCertificate.DeleteLastExport()
-		if ($UploadResult -ne 0) {
-			return
-		}
-	}
-	else {
-		# Use existing certificate file for upload
-		$UploadResult = $FirewallApi.UploadCertificate($PfxPath, $PfxPassword, $CertName)
-		if ($UploadResult -ne 0) {
-			return
-		}
+	$UploadResult = $FirewallApi.UploadCertificate($global:InternalPfxPath, $global:InternalPfxPassword, $CertName)
+	
+	if ($UploadResult -ne 0) {
+		return
 	}
 	
 	$null = $FirewallApi.UpdateWAFRules($CertName, $DomainNames)
@@ -555,6 +547,10 @@ function Main {
 	
 	if ($DeleteOldCertificates) {
 		$null = $FirewallApi.DeleteCertificates()
+	}
+
+	if ($global:DeleteTempCert) {
+		Remove-Item $global:InternalPfxPath
 	}
 }
 
